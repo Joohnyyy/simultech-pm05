@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Аптека Симултех</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        .tab-content { background: white; padding: 25px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .nav-tabs .nav-link.active { background: #2e7d32; color: white; border-color: #2e7d32; }
+        .nav-link { color: #2e7d32; }
+        .suggestion-item { cursor: pointer; }
+        .suggestion-item:hover { background: #e8f5e9; }
+    </style>
+</head>
+<body>
+<div class="container mt-4">
+    <h2 class="text-center mb-3">🟢 Аптека Симултех</h2>
+    <ul class="nav nav-tabs" id="mainTabs">
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#login">🔐 Вход</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#cashier">🛒 Касса</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#reports">📊 Отчёты</a></li>
+    </ul>
+    <div class="tab-content">
+        <!-- Вкладка Вход -->
+        <div class="tab-pane fade show active" id="login">
+            <h4>Авторизация</h4>
+            <div class="mb-3"><input type="text" id="loginUser" class="form-control" placeholder="Логин"></div>
+            <div class="mb-3"><input type="password" id="loginPass" class="form-control" placeholder="Пароль"></div>
+            <button class="btn btn-success" onclick="login()">Войти</button>
+            <div id="loginMsg" class="mt-2"></div>
+        </div>
+        <!-- Вкладка Касса -->
+        <div class="tab-pane fade" id="cashier">
+            <h4>Рабочее место кассира <span id="cashierName" class="text-muted"></span></h4>
+            <input type="text" id="searchInput" class="form-control" placeholder="Поиск товара (напр. Парац)" oninput="searchProducts()">
+            <div id="suggestions" class="list-group mt-1"></div>
+            <table class="table table-bordered mt-3" id="cartTable" style="display:none">
+                <thead><tr><th>Товар</th><th>Цена</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                <tbody id="cartBody"></tbody>
+            </table>
+            <div class="fw-bold mb-3">Итого: <span id="totalAmount">0</span> ₽</div>
+            <button class="btn btn-success" onclick="checkout()">Оплатить</button>
+            <div id="cashierMsg" class="mt-2"></div>
+        </div>
+        <!-- Вкладка Отчёты -->
+        <div class="tab-pane fade" id="reports">
+            <h4>Отчёт по продажам</h4>
+            <button class="btn btn-outline-success mb-3" onclick="loadReports()">Загрузить за 7 дней</button>
+            <table class="table table-bordered" id="reportTable" style="display:none">
+                <thead><tr><th>Дата</th><th>Выручка</th><th>Чеков</th></tr></thead>
+                <tbody id="reportBody"></tbody>
+            </table>
+            <button class="btn btn-outline-success" onclick="exportCSV()">📥 Экспорт в CSV</button>
+        </div>
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const BASE = 'http://localhost:8001';
+
+let token = localStorage.getItem('access_token') || '';
+let currentUser = null;
+
+async function api(method, url, body = null) {
+    let headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    let res = await fetch(BASE + url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (res.status === 401) { alert('Сессия истекла'); localStorage.removeItem('access_token'); token = ''; }
+    return res.json();
+}
+
+async function login() {
+    let login = document.getElementById('loginUser').value;
+    let password = document.getElementById('loginPass').value;
+    let data = new URLSearchParams({ login, password });
+    let res = await fetch(BASE + '/login', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: data });
+    let json = await res.json();
+    if (res.ok) {
+        token = json.access_token;
+        localStorage.setItem('access_token', token);
+        currentUser = { login, role: json.role };
+        document.getElementById('cashierName').textContent = `(${login})`;
+        let tab = new bootstrap.Tab(document.querySelector('#cashier'));
+        tab.show();
+    } else {
+        document.getElementById('loginMsg').innerHTML = '<div class="alert alert-danger">Неверные данные</div>';
+    }
+}
+
+async function searchProducts() {
+    let q = document.getElementById('searchInput').value;
+    if (q.length < 2) { document.getElementById('suggestions').innerHTML = ''; return; }
+    let res = await fetch(BASE + '/api/products?q=' + encodeURIComponent(q));
+    let products = await res.json();
+    let html = '';
+    products.forEach(p => { html += `<a href="#" class="list-group-item list-group-item-action suggestion-item" onclick="addToCart(${p.id},'${p.name}',${p.price})">${p.name} - ${p.price} ₽ (ост.${p.stock})</a>`; });
+    document.getElementById('suggestions').innerHTML = html;
+}
+
+let cart = [];
+function addToCart(id, name, price) {
+    let existing = cart.find(i => i.id === id);
+    if (existing) existing.qty++;
+    else cart.push({id, name, price, qty:1});
+    renderCart();
+    document.getElementById('searchInput').value = '';
+    document.getElementById('suggestions').innerHTML = '';
+}
+
+function renderCart() {
+    let tbody = document.getElementById('cartBody');
+    tbody.innerHTML = '';
+    let total = 0;
+    cart.forEach(item => {
+        let sum = item.price * item.qty;
+        total += sum;
+        tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price}</td><td>${item.qty}</td><td>${sum.toFixed(2)}</td></tr>`;
+    });
+    document.getElementById('totalAmount').textContent = total.toFixed(2);
+    document.getElementById('cartTable').style.display = cart.length ? '' : 'none';
+}
+
+async function checkout() {
+    if (!token) { alert('Сначала войдите'); return; }
+    let items = cart.map(i => ({ product_id: i.id, quantity: i.qty }));
+    let res = await api('POST', '/api/checkout', { items, payment_method: 'cash' });
+    if (res.status === 'success') {
+        document.getElementById('cashierMsg').innerHTML = '<div class="alert alert-success">Чек создан успешно!</div>';
+        cart = [];
+        renderCart();
+    } else {
+        document.getElementById('cashierMsg').innerHTML = '<div class="alert alert-danger">Ошибка: '+ (res.detail || '') +'</div>';
+    }
+}
+
+async function loadReports() {
+    let res = await fetch(BASE + '/api/checks');
+    let checks = await res.json();
+    let tbody = document.getElementById('reportBody');
+    tbody.innerHTML = '';
+    checks.forEach(c => { tbody.innerHTML += `<tr><td>${c.date_time}</td><td>${c.total}</td><td>1</td></tr>`; });
+    document.getElementById('reportTable').style.display = '';
+}
+
+function exportCSV() {
+    window.open(BASE + '/api/reports/csv');
+}
+</script>
+</body>
+</html>
